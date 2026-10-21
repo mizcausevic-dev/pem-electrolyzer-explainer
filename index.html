@@ -1,0 +1,710 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>PEM Water Electrolyzer Stack — Anatomy Motion Explainer</title>
+<style>
+  :root{
+    --stage:#0B1019;
+    --struct:#344257;
+    --struct-2:#2a3647;
+    --cyan:#00E5FF;
+    --gold:#FFD166;
+    --violet:#9D4EDD;
+    --ink:#C5C6C7;
+    --ink-dim:#7d8794;
+    --water:#5B9BD5;
+    --o2:#E0655F;
+    --h2:#C9D6E8;
+    --mono:"JetBrains Mono",ui-monospace,Menlo,Consolas,monospace;
+    --sans:"Space Grotesk",system-ui,Segoe UI,Roboto,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--stage);color:var(--ink);font-family:var(--sans);overflow:hidden}
+  #wrap{position:fixed;inset:0;display:flex;flex-direction:column}
+  #stage-wrap{position:relative;flex:1;min-height:0;display:grid;place-items:center;
+    background:radial-gradient(120% 90% at 50% 18%, #0e1622 0%, var(--stage) 70%)}
+  canvas#stage{display:block;background:transparent;max-width:100%;max-height:100%;
+    aspect-ratio:16/9;box-shadow:0 0 0 1px #1c2533, 0 24px 60px rgba(0,0,0,.5)}
+  #bar{flex:0 0 auto;background:#0a0f17;border-top:1px solid #1c2533;padding:10px 14px;
+    display:flex;gap:14px;align-items:center;flex-wrap:wrap;font-family:var(--mono);font-size:12px}
+  #bar button{background:#162033;color:var(--ink);border:1px solid #2a3a52;border-radius:6px;
+    padding:6px 12px;cursor:pointer;font-family:var(--mono);font-size:12px}
+  #bar button:hover{border-color:var(--cyan);color:var(--cyan)}
+  #scrub{flex:1;min-width:200px;accent-color:var(--cyan)}
+  #frameinfo{color:var(--cyan);min-width:230px}
+  #segname{color:var(--gold);min-width:0}
+  #speed{background:#162033;color:var(--ink);border:1px solid #2a3a52;border-radius:6px;
+    padding:5px 8px;font-family:var(--mono);font-size:12px}
+  .badge{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-dim)}
+  a{color:var(--cyan)}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="stage-wrap"><canvas id="stage" width="1280" height="720"></canvas></div>
+  <div id="bar">
+    <button id="play">Play</button>
+    <button id="restart">Restart</button>
+    <input id="scrub" type="range" min="0" max="1019" value="0" />
+    <span id="frameinfo">f 0000 / 1019 | t 0.00s</span>
+    <span id="segname">S1 Reveal</span>
+    <label class="badge">speed
+      <select id="speed">
+        <option value="0.25">0.25x</option>
+        <option value="0.5">0.5x</option>
+        <option value="1" selected>1x</option>
+        <option value="2">2x</option>
+      </select>
+    </label>
+  </div>
+</div>
+<script>
+/* ============================================================
+   PEM Water Electrolyzer Stack — deterministic frame-driven anatomy explainer
+   34 s @ 30 fps = 1020 frames (0..1019). Pure function of frame index.
+   ============================================================ */
+const CVS = document.getElementById('stage');
+const CTX = CVS.getContext('2d');
+const W = CVS.width, H = CVS.height;
+const FPS = 30, TOTAL = 1020;
+
+/* palette */
+const C = {
+  stage:'#0B1019', struct:'#344257', struct2:'#2a3647', struct3:'#1f2a3a',
+  cyan:'#00E5FF', gold:'#FFD166', violet:'#9D4EDD',
+  ink:'#C5C6C7', dim:'#7d8794', faint:'#465064',
+  water:'#5B9BD5', o2:'#E0655F', h2:'#C9D6E8',
+  grid:'rgba(120,160,200,0.05)'
+};
+
+/* ---------- math helpers ---------- */
+const clamp=(v,a,b)=>v<a?a:v>b?b:v;
+const lerp=(a,b,t)=>a+(b-a)*t;
+const easeInOut=(t)=>t<.5?4*t*t*t:1-Math.pow(-2*t+2,3)/2;
+const segT=(f,a,b)=>clamp((f-a)/(b-a),0,1);
+const fade=(f,fi,fo)=>{ const IN=10,OUT=10;
+  return clamp((f-(fi-IN))/IN,0,1)*clamp(((fo+OUT)-f)/OUT,0,1); };
+
+/* ---------- camera keyframes (macro->micro->macro) ---------- */
+const CAMS=[
+  {f:0,   x:640, y:380, z:0.80},
+  {f:150, x:262, y:360, z:2.30},
+  {f:300, x:640, y:300, z:1.65},
+  {f:510, x:1018,y:360, z:2.30},
+  {f:750, x:640, y:430, z:0.66},
+  {f:1019,x:640, y:430, z:0.66}
+];
+function cameraAt(f){
+  let i=0; while(i<CAMS.length-1 && f>CAMS[i+1].f) i++;
+  const a=CAMS[i], b=CAMS[i+1]||CAMS[i];
+  const t = b===a?0:easeInOut(clamp((f-a.f)/(b.f-a.f),0,1));
+  return { x:lerp(a.x,b.x,t), y:lerp(a.y,b.y,t), z:lerp(a.z,b.z,t) };
+}
+
+/* ---------- stack geometry ---------- */
+const STACK = {
+  cy:380, top:200, bot:560, h:360,
+  ncells:5, cellW:110,
+  left:365, right:915, endL:315, endR:965, endW:50
+};
+function cellCenterX(i){ return STACK.left + STACK.cellW*(i+0.5); }
+const LAY = { anBP:-55, anPTL:-40, anCat:-25, mem:-12, catCat:12, catPTL:25, catBP:40, edge:55 };
+
+/* deterministic pseudo-random */
+function hash(n){ let x=Math.sin(n*127.1+311.7)*43758.5453; return x-Math.floor(x); }
+
+/* ---------- background grid ---------- */
+function drawGrid(){
+  CTX.fillStyle=C.stage; CTX.fillRect(0,0,W,H);
+  CTX.save();
+  CTX.strokeStyle=C.grid; CTX.lineWidth=1;
+  for(let x=0;x<=W;x+=44){ CTX.beginPath(); CTX.moveTo(x,0); CTX.lineTo(x,H); CTX.stroke(); }
+  for(let y=0;y<=H;y+=44){ CTX.beginPath(); CTX.moveTo(0,y); CTX.lineTo(W,y); CTX.stroke(); }
+  CTX.restore();
+}
+
+/* ---------- structural helpers ---------- */
+function panel(x,y,w,h,fill,stroke){
+  CTX.fillStyle=fill; CTX.fillRect(x,y,w,h);
+  if(stroke){ CTX.strokeStyle=stroke; CTX.lineWidth=1; CTX.strokeRect(x+0.5,y+0.5,w-1,h-1); }
+}
+function rrect(x,y,w,h,r,fill,stroke){
+  CTX.beginPath();
+  CTX.moveTo(x+r,y); CTX.arcTo(x+w,y,x+w,y+h,r); CTX.arcTo(x+w,y+h,x,y+h,r);
+  CTX.arcTo(x,y+h,x,y,r); CTX.arcTo(x,y,x+w,y,r); CTX.closePath();
+  if(fill){CTX.fillStyle=fill;CTX.fill();}
+  if(stroke){CTX.strokeStyle=stroke;CTX.lineWidth=1;CTX.stroke();}
+}
+
+/* ---------- draw the stack (cells + end plates + manifolds) ----------
+   reveal: 0..1 controls how many cells are shown (segment 1 build-in) */
+function drawStack(reveal){
+  const {top,bot,h,left,right,endL,endR,endW,ncells,cellW}=STACK;
+  // end plates
+  panel(endL,top,endW,h,C.struct2,'#46586e');
+  panel(endR,top,endW,h,C.struct2,'#46586e');
+  // end-plate tie lines (compression) schematic
+  CTX.strokeStyle='#3a4a60'; CTX.lineWidth=2;
+  for(let y of [top+18, bot-18]){
+    CTX.beginPath(); CTX.moveTo(endL-6,y); CTX.lineTo(endR+endW+6,y); CTX.stroke();
+  }
+  // cells revealed left->right
+  const shown = Math.max(1, Math.round(ncells*reveal));
+  for(let i=0;i<shown;i++){
+    const cx=cellCenterX(i);
+    const x0=cx+LAY.anBP, x1=cx+LAY.anPTL, x2=cx+LAY.anCat,
+          x3=cx+LAY.mem, x4=cx+LAY.catCat, x5=cx+LAY.catPTL, x6=cx+LAY.catBP, x7=cx+LAY.edge;
+    // anode bipolar plate
+    panel(x0,top,x1-x0,h,C.struct,'#46586e');
+    // anode PTL (porous) — hatched
+    hatch(x1,top,x2-x1,h,C.struct3,'#46586e');
+    // anode catalyst layer
+    panel(x2,top,x3-x2,h,'#5a4a3a','#8a6a4a');
+    // PEM membrane
+    panel(x3,top,x4-x3,h,'#7a5fa0','#9D4EDD');
+    // cathode catalyst layer
+    panel(x4,top,x5-x4,h,'#3a5a5a','#5a8a8a');
+    // cathode PTL
+    hatch(x5,top,x6-x5,h,C.struct3,'#46586e');
+    // cathode bipolar plate
+    panel(x6,top,x7-x6,h,C.struct,'#46586e');
+    // flow channel hints in bipolar plates
+    CTX.strokeStyle='rgba(180,210,240,0.10)'; CTX.lineWidth=1;
+    for(let yy=top+24; yy<bot-12; yy+=26){
+      CTX.beginPath(); CTX.moveTo(x0+3,yy); CTX.lineTo(x1-3,yy); CTX.stroke();
+      CTX.beginPath(); CTX.moveTo(x6+3,yy); CTX.lineTo(x7-3,yy); CTX.stroke();
+    }
+  }
+  // manifolds: water feed (top-left), O2 outlet (top over anode), H2 outlet (top over cathode)
+  drawManifolds(reveal);
+}
+
+function hatch(x,y,w,h,fill,stroke){
+  panel(x,y,w,h,fill,stroke);
+  CTX.save();
+  CTX.beginPath(); CTX.rect(x,y,w,h); CTX.clip();
+  CTX.strokeStyle='rgba(180,200,220,0.10)'; CTX.lineWidth=1;
+  for(let k=-h;k<w+h;k+=6){ CTX.beginPath(); CTX.moveTo(x+k,y); CTX.lineTo(x+k+h,y+h); CTX.stroke(); }
+  CTX.restore();
+}
+
+function drawManifolds(reveal){
+  const {top,bot,left,right,endL,endR,endW}=STACK;
+  // water feed header (top, spanning anode side)
+  CTX.strokeStyle=C.water; CTX.lineWidth=3; CTX.globalAlpha=0.85;
+  CTX.beginPath();
+  CTX.moveTo(endL+endW/2, top-8); CTX.lineTo(endL+endW/2, top-40);
+  CTX.lineTo(left+STACK.cellW*0.3, top-40); CTX.lineTo(left+STACK.cellW*0.3, top);
+  CTX.stroke();
+  // O2 outlet (over anode side of stack)
+  CTX.strokeStyle=C.o2; CTX.globalAlpha=0.85;
+  CTX.beginPath();
+  CTX.moveTo(left+STACK.cellW*0.3, top); CTX.lineTo(left+STACK.cellW*0.3, top-58);
+  CTX.lineTo(left+STACK.cellW*0.3+40, top-58);
+  CTX.stroke();
+  // H2 outlet (over cathode side)
+  CTX.strokeStyle=C.h2;
+  CTX.beginPath();
+  CTX.moveTo(right-STACK.cellW*0.3, top); CTX.lineTo(right-STACK.cellW*0.3, top-58);
+  CTX.lineTo(right-STACK.cellW*0.3+40, top-58);
+  CTX.stroke();
+  CTX.globalAlpha=1;
+  // labels for ports drawn in label pass
+}
+
+/* ---------- external circuit + power supply + electrons ----------
+   Electron path (gold): anode end plate -> up left wire -> into supply -> out right wire -> down to cathode end plate.
+   Electrons do NOT cross the membrane. */
+const SUP = {x:550, y:60, w:180, h:70};  // power supply box
+function wirePath(){
+  const {top,endL,endR,endW}=STACK;
+  const aX=endL+endW/2, cX=endR+endW/2;
+  // left wire: anode(top) up to supply bottom-left
+  const p=[];
+  p.push({x:aX,y:top}); p.push({x:aX,y:SUP.y+SUP.h});
+  p.push({x:SUP.x,y:SUP.y+SUP.h});
+  // right wire: supply bottom-right down to cathode(top)
+  p.push({x:SUP.x+SUP.w,y:SUP.y+SUP.h});
+  p.push({x:cX,y:SUP.y+SUP.h}); p.push({x:cX,y:top});
+  return p;
+}
+function drawCircuit(f){
+  const {top,endL,endR,endW}=STACK;
+  const aX=endL+endW/2, cX=endR+endW/2;
+  // wires
+  CTX.strokeStyle=C.struct; CTX.lineWidth=4;
+  const p=wirePath();
+  CTX.beginPath(); CTX.moveTo(p[0].x,p[0].y);
+  for(let i=1;i<p.length;i++) CTX.lineTo(p[i].x,p[i].y);
+  CTX.stroke();
+  // power supply box
+  rrect(SUP.x,SUP.y,SUP.w,SUP.h,10,C.struct2,'#46586e');
+  CTX.fillStyle=C.gold; CTX.font='600 13px JetBrains Mono,monospace';
+  CTX.textAlign='center'; CTX.textBaseline='middle';
+  CTX.fillText('DC POWER SUPPLY', SUP.x+SUP.w/2, SUP.y+22);
+  CTX.fillStyle=C.dim; CTX.font='11px JetBrains Mono,monospace';
+  CTX.fillText('ΔG > 0  (consumes energy)', SUP.x+SUP.w/2, SUP.y+44);
+  // polarity markers
+  CTX.fillStyle=C.violet; CTX.font='bold 14px JetBrains Mono,monospace';
+  CTX.fillText('+', aX-2, SUP.y+SUP.h+14);
+  CTX.fillText('−', cX+2, SUP.y+SUP.h+14);
+  CTX.textAlign='left'; CTX.textBaseline='alphabetic';
+  // electrons (gold) flowing anode->supply->cathode
+  drawElectrons(f);
+}
+function drawElectrons(f){
+  const p=wirePath();
+  // cumulative length
+  const segLen=[]; let total=0;
+  for(let i=0;i<p.length-1;i++){ const d=Math.hypot(p[i+1].x-p[i].x,p[i+1].y-p[i].y); segLen.push(d); total+=d; }
+  const n=10;
+  for(let i=0;i<n;i++){
+    const prog=((f*0.012)+i/n)%1;
+    const dist=prog*total;
+    let acc=0, j=0;
+    for(;j<segLen.length;j++){ if(acc+segLen[j]>=dist) break; acc+=segLen[j]; }
+    const segJ = j<segLen.length ? j : segLen.length-1;
+    const tt  = j<segLen.length ? (dist-acc)/segLen[j] : 1;
+    const A=p[segJ], B=p[segJ+1]||p[segJ];
+    const x=lerp(A.x,B.x,tt), y=lerp(A.y,B.y,tt);
+    glowDot(x,y,3.2,C.gold,0.95);
+  }
+}
+
+/* ---------- generic glowing dot ---------- */
+function glowDot(x,y,r,col,a){
+  CTX.save();
+  CTX.globalAlpha=a;
+  CTX.fillStyle=col;
+  CTX.shadowColor=col; CTX.shadowBlur=10;
+  CTX.beginPath(); CTX.arc(x,y,r,0,Math.PI*2); CTX.fill();
+  CTX.restore();
+}
+
+/* ---------- particles ----------
+   Water (blue) flows down feed into anode channels.
+   Protons (cyan) cross PEM membrane anode->cathode (primary transport signal).
+   O2 bubbles (coral) rise on anode side; H2 bubbles (pale) rise on cathode side.
+   All positions are deterministic functions of frame index.
+*/
+function drawWaterFlow(f){
+  // droplets in feed header
+  const {top,endL,endW,left}=STACK;
+  const aX=endL+endW/2;
+  for(let i=0;i<8;i++){
+    const prog=((f*0.02)+i/8)%1;
+    let x,y;
+    if(prog<0.5){ const t=prog/0.5; x=aX; y=lerp(top-40,top,t); }
+    else { const t=(prog-0.5)/0.5; x=lerp(aX, left+STACK.cellW*0.3,t); y=top-40; }
+    glowDot(x,y,2.4,C.water,0.7);
+  }
+  // water inside anode PTL region of each cell (subtle)
+  for(let ci=0;ci<STACK.ncells;ci++){
+    const cx=cellCenterX(ci);
+    for(let i=0;i<4;i++){
+      const prog=((f*0.015)+i/4+ci*0.13)%1;
+      const x=lerp(cx+LAY.anPTL, cx+LAY.anCat, hash(ci*7+i)*0.6+0.2);
+      const y=lerp(STACK.top+10, STACK.bot-10, prog);
+      CTX.globalAlpha=0.35; CTX.fillStyle=C.water;
+      CTX.beginPath(); CTX.arc(x,y,1.8,0,Math.PI*2); CTX.fill();
+      CTX.globalAlpha=1;
+    }
+  }
+}
+
+function drawProtons(f){
+  // protons cross membrane anode(catalyst) -> cathode(catalyst), in each cell
+  for(let ci=0;ci<STACK.ncells;ci++){
+    const cx=cellCenterX(ci);
+    const x0=cx+LAY.anCat, x1=cx+LAY.catCat;
+    for(let i=0;i<5;i++){
+      const cyc=90; // frames per crossing
+      const prog=(((f - i*cyc/5 - ci*13) % cyc)+cyc)%cyc / cyc;
+      if(prog>1) continue;
+      const x=lerp(x0,x1,prog);
+      const yJit = (hash(ci*31+i)*2-1)*8;
+      const y = STACK.cy + yJit + Math.sin(prog*Math.PI)*-6;
+      glowDot(x,y,2.8,C.cyan,0.95);
+      // tiny + label occasionally omitted for clarity
+    }
+  }
+}
+
+function drawGasBubbles(f){
+  // O2 on anode side, H2 on cathode side, rising from catalyst to top outlet
+  for(let ci=0;ci<STACK.ncells;ci++){
+    const cx=cellCenterX(ci);
+    // O2
+    for(let i=0;i<5;i++){
+      const cyc=70;
+      const prog=(((f - i*cyc/5 - ci*7) % cyc)+cyc)%cyc / cyc;
+      const x = lerp(cx+LAY.anCat, cx+LAY.anPTL, 0.4) + (hash(ci*5+i)-0.5)*6;
+      const y = lerp(STACK.bot-20, STACK.top+10, prog);
+      const r = 2 + prog*2.2;
+      bubble(x,y,r,C.o2,0.7*prog);
+    }
+    // H2
+    for(let i=0;i<5;i++){
+      const cyc=70;
+      const prog=(((f - i*cyc/5 - ci*11 - 20) % cyc)+cyc)%cyc / cyc;
+      const x = lerp(cx+LAY.catCat, cx+LAY.catPTL, 0.4) + (hash(ci*9+i)-0.5)*6;
+      const y = lerp(STACK.bot-20, STACK.top+10, prog);
+      const r = 1.8 + prog*2;
+      bubble(x,y,r,C.h2,0.7*prog);
+    }
+  }
+}
+function bubble(x,y,r,col,a){
+  CTX.save(); CTX.globalAlpha=a;
+  CTX.strokeStyle=col; CTX.lineWidth=1.2;
+  CTX.beginPath(); CTX.arc(x,y,r,0,Math.PI*2); CTX.stroke();
+  CTX.restore();
+}
+
+/* ---------- labels with leader lines ----------
+   Each label: {seg, ax, ay (anchor in world), tx, ty (text box), text, kind}
+   kind: 'phys' | 'meas' | 'infer' | 'concept' | 'math' | 'msg'
+*/
+const LABELS = [
+  // S1 — full stack reveal
+  {seg:1, ax:640, ay:200, tx:740, ty:120, text:'REPEATING CELLS (n shown = 5)', kind:'phys'},
+  {seg:1, ax:340, ay:170, tx:120, ty:120, text:'WATER FEED  (H2O)', kind:'phys'},
+  {seg:1, ax:640, ay:60,  tx:740, ty:40,  text:'DC ELECTRICAL INPUT', kind:'phys'},
+  {seg:1, ax:405, ay:170, tx:330, ty:90,  text:'O2 OUTLET', kind:'phys'},
+  {seg:1, ax:875, ay:170, tx:910, ty:90,  text:'H2 OUTLET', kind:'phys'},
+  {seg:1, ax:315, ay:380, tx:120, ty:380, text:'END PLATE  (anode, +)', kind:'phys'},
+  {seg:1, ax:965, ay:380, tx:1010,ty:380, text:'END PLATE  (cathode, −)', kind:'phys'},
+  // S2 — anode interface
+  {seg:2, ax:262+LAY.anBP,  ay:380, tx:60,  ty:240, text:'ANODE BIPOLAR PLATE', kind:'phys'},
+  {seg:2, ax:262+LAY.anPTL, ay:380, tx:60,  ty:300, text:'POROUS TRANSPORT LAYER (PTL)', kind:'phys'},
+  {seg:2, ax:262+LAY.anCat, ay:380, tx:60,  ty:360, text:'ANODE CATALYST LAYER  (Ir-based, conceptual)', kind:'concept'},
+  {seg:2, ax:262+LAY.anPTL, ay:520, tx:60,  ty:560, text:'WATER SUPPLIED TO ANODE', kind:'phys'},
+  // S3 — membrane + circuit
+  {seg:3, ax:640, ay:380, tx:860, ty:430, text:'PEM MEMBRANE  (electrons do NOT cross)', kind:'phys'},
+  {seg:3, ax:640, ay:380, tx:860, ty:470, text:'PROTONS (H+) CROSS ANODE -> CATHODE', kind:'msg'},
+  {seg:3, ax:640, ay:120, tx:860, ty:150, text:'ELECTRONS (e−) ROUTED VIA EXTERNAL CIRCUIT', kind:'msg'},
+  {seg:3, ax:640, ay:95,  tx:860, ty:120, text:'POWER SUPPLY: ΔG > 0  (consumes energy)', kind:'infer'},
+  // S4 — cathode
+  {seg:4, ax:1018+LAY.catCat, ay:380, tx:1080,ty:300, text:'CATHODE CATALYST LAYER  (Pt-based, conceptual)', kind:'concept'},
+  {seg:4, ax:1018+LAY.catPTL, ay:380, tx:1080,ty:360, text:'CATHODE PTL', kind:'phys'},
+  {seg:4, ax:1018+LAY.catPTL, ay:250, tx:1080,ty:250, text:'H2 GAS COLLECTION', kind:'phys'},
+  // S5 — system boundary
+  {seg:5, ax:340, ay:170, tx:120, ty:150, text:'INPUT: WATER (H2O)', kind:'phys'},
+  {seg:5, ax:640, ay:95,  tx:740, ty:60,  text:'INPUT: ELECTRICITY (DC)', kind:'phys'},
+  {seg:5, ax:405, ay:170, tx:330, ty:90,  text:'OUTPUT: OXYGEN (O2)', kind:'phys'},
+  {seg:5, ax:875, ay:170, tx:910, ty:90,  text:'OUTPUT: HYDROGEN (H2)', kind:'phys'},
+  {seg:5, ax:965, ay:560, tx:1010,ty:600, text:'OUTPUT: WASTE HEAT (Q)', kind:'infer'},
+];
+
+const KIND_COL = {
+  phys:'#C5C6C7', meas:'#7BC47F', infer:'#9D4EDD', concept:'#FFD166',
+  math:'#00E5FF', msg:'#00E5FF'
+};
+const KIND_TAG = {
+  phys:'PHYSICAL', meas:'MEASURED', infer:'INFERRED', concept:'CONCEPTUAL',
+  math:'MATH', msg:'SIGNAL'
+};
+
+function drawLabels(f){
+  for(const L of LABELS){
+    const segRange = SEG_RANGES[L.seg];
+    const a = fade(f, segRange[0], segRange[1]);
+    if(a<=0.01) continue;
+    const col = KIND_COL[L.kind];
+    CTX.save(); CTX.globalAlpha=a;
+    // leader line
+    CTX.strokeStyle=col; CTX.lineWidth=1; CTX.setLineDash([3,3]);
+    CTX.beginPath(); CTX.moveTo(L.ax,L.ay); CTX.lineTo(L.tx,L.ty); CTX.stroke();
+    CTX.setLineDash([]);
+    // anchor dot
+    CTX.fillStyle=col; CTX.beginPath(); CTX.arc(L.ax,L.ay,2.2,0,Math.PI*2); CTX.fill();
+    // text box
+    CTX.font='600 11px JetBrains Mono,monospace';
+    CTX.textAlign = L.tx>L.ax?'left':'right';
+    const padX = L.tx>L.ax?6:-6;
+    CTX.fillStyle=col;
+    CTX.fillText(L.text, L.tx+padX, L.ty);
+    // kind tag
+    CTX.font='9px JetBrains Mono,monospace';
+    CTX.fillStyle=C.dim;
+    CTX.fillText('['+KIND_TAG[L.kind]+']', L.tx+padX, L.ty+12);
+    CTX.restore();
+  }
+}
+
+// segment frame ranges
+const SEG_RANGES = {
+  1:[0,149], 2:[150,299], 3:[300,509], 4:[510,749], 5:[750,1019]
+};
+const SEG_NAMES = {
+  1:'S1  REVEAL — STACK, FEEDS, OUTLETS',
+  2:'S2  ANODE CATALYST INTERFACE',
+  3:'S3  O2 EVOLUTION + H+ CROSSING + e− CIRCUIT',
+  4:'S4  CATHODIC H2 FORMATION',
+  5:'S5  SYSTEM BOUNDARY — INPUTS / OUTPUTS'
+};
+
+/* ---------- math insets (half-reactions) ---------- */
+function drawMathInsets(f){
+  // Anode half-reaction appears in S3
+  const a3 = fade(f, 300, 509);
+  if(a3>0.01){
+    drawInset(60, 560, 360, 70, a3,
+      'ANODE (oxidation)',
+      '2 H2O  ->  O2 + 4 H+ + 4 e−',
+      'OXYGEN EVOLUTION', C.o2);
+  }
+  // Cathode half-reaction appears in S4
+  const a4 = fade(f, 510, 749);
+  if(a4>0.01){
+    drawInset(860, 560, 360, 70, a4,
+      'CATHODE (reduction)',
+      '4 H+ + 4 e−  ->  2 H2',
+      'HYDROGEN EVOLUTION', C.h2);
+  }
+  // Overall + energy balance appears in S5
+  const a5 = fade(f, 750, 1019);
+  if(a5>0.01){
+    drawInset(360, 620, 560, 78, a5,
+      'OVERALL  (within system boundary)',
+      '2 H2O  ->  2 H2 + O2       |       ΔG > 0  (endothermic, requires electrical input)',
+      'MASS + CHARGE + ENERGY PATHWAY', C.cyan);
+  }
+}
+function drawInset(x,y,w,h,a,title,body,tag,col){
+  CTX.save(); CTX.globalAlpha=a;
+  rrect(x,y,w,h,8,'rgba(10,16,25,0.85)', col);
+  CTX.fillStyle=col; CTX.font='600 11px JetBrains Mono,monospace'; CTX.textAlign='left';
+  CTX.fillText(title, x+12, y+18);
+  CTX.fillStyle=C.ink; CTX.font='600 14px JetBrains Mono,monospace';
+  CTX.fillText(body, x+12, y+40);
+  CTX.fillStyle=C.dim; CTX.font='9px JetBrains Mono,monospace';
+  CTX.fillText('[MATH] '+tag, x+12, y+58);
+  CTX.restore();
+}
+
+/* ---------- control / state overlays (volarity, energy direction) ---------- */
+function drawControlOverlays(f){
+  // polarity bands on end plates during S3/S4
+  const a = clamp(fade(f,300,749),0,1);
+  if(a>0.01){
+    CTX.save(); CTX.globalAlpha=a*0.5;
+    CTX.fillStyle=C.violet;
+    CTX.fillRect(STACK.endL+8, STACK.top+6, 6, STACK.h-12);
+    CTX.fillRect(STACK.endR+STACK.endW-14, STACK.top+6, 6, STACK.h-12);
+    CTX.restore();
+    CTX.save(); CTX.globalAlpha=a;
+    CTX.fillStyle=C.violet; CTX.font='bold 12px JetBrains Mono,monospace'; CTX.textAlign='center';
+    CTX.fillText('+', STACK.endL+STACK.endW/2, STACK.top-6);
+    CTX.fillText('−', STACK.endR+STACK.endW/2, STACK.top-6);
+    CTX.textAlign='left'; CTX.restore();
+  }
+  // energy arrow into supply (S5)
+  const a5 = fade(f,750,1019);
+  if(a5>0.01){
+    CTX.save(); CTX.globalAlpha=a5;
+    CTX.strokeStyle=C.gold; CTX.lineWidth=2;
+    CTX.beginPath();
+    CTX.moveTo(SUP.x-30, SUP.y+SUP.h/2);
+    CTX.lineTo(SUP.x-4, SUP.y+SUP.h/2);
+    CTX.stroke();
+    // arrowhead
+    CTX.beginPath();
+    CTX.moveTo(SUP.x-4, SUP.y+SUP.h/2);
+    CTX.lineTo(SUP.x-12, SUP.y+SUP.h/2-5);
+    CTX.lineTo(SUP.x-12, SUP.y+SUP.h/2+5);
+    CTX.closePath(); CTX.fillStyle=C.gold; CTX.fill();
+    CTX.fillStyle=C.gold; CTX.font='600 10px JetBrains Mono,monospace';
+    CTX.fillText('ENERGY IN', SUP.x-30, SUP.y+SUP.h/2-8);
+    CTX.restore();
+  }
+}
+
+/* ---------- HUD (screen space) ---------- */
+function drawHUD(f){
+  // top-left: title + frame counter
+  CTX.save();
+  CTX.fillStyle='rgba(10,16,25,0.6)'; CTX.fillRect(0,0,W,34);
+  CTX.fillStyle=C.ink; CTX.font='600 13px JetBrains Mono,monospace';
+  CTX.textAlign='left'; CTX.textBaseline='middle';
+  CTX.fillText('PEM WATER ELECTROLYZER STACK  —  ANATOMY EXPLAINER', 14, 17);
+  CTX.fillStyle=C.cyan;
+  const tsec=(f/FPS).toFixed(2);
+  CTX.fillText(`f ${String(f).padStart(4,'0')} / 1019   |   t ${tsec}s   |   30 fps`, W-260, 17);
+  CTX.restore();
+
+  // bottom-left: legend
+  drawLegend();
+  // bottom-right: safeguards / accuracy
+  drawSafeguards(f);
+  // segment banner (current)
+  drawSegBanner(f);
+  // transient accuracy tags
+  drawAccuracyTags(f);
+}
+
+function drawLegend(){
+  const x=14, y=H-118, w=210, h=104;
+  CTX.save();
+  rrect(x,y,w,h,8,'rgba(10,16,25,0.78)','#1c2533');
+  CTX.fillStyle=C.dim; CTX.font='600 10px JetBrains Mono,monospace'; CTX.textAlign='left';
+  CTX.fillText('LEGEND  /  EVIDENCE TYPES', x+10, y+16);
+  const rows=[
+    ['PHYSICAL COMPONENT', C.ink],
+    ['MEASURED QUANTITY',  '#7BC47F'],
+    ['INFERRED VALUE',     C.violet],
+    ['CONCEPTUAL SCHEMATIC', C.gold],
+    ['MATH / EQUATION',    C.cyan],
+    ['SIGNAL / MESSAGE',   C.cyan],
+  ];
+  CTX.font='10px JetBrains Mono,monospace';
+  rows.forEach((r,i)=>{
+    const yy=y+34+i*12;
+    CTX.fillStyle=r[1]; CTX.fillRect(x+10,yy-4,8,8);
+    CTX.fillStyle=C.ink; CTX.fillText(r[0], x+24, yy);
+  });
+  CTX.restore();
+}
+
+function drawSafeguards(f){
+  const x=W-330, y=H-118, w=316, h=104;
+  CTX.save();
+  rrect(x,y,w,h,8,'rgba(10,16,25,0.78)','#1c2533');
+  CTX.fillStyle=C.dim; CTX.font='600 10px JetBrains Mono,monospace'; CTX.textAlign='left';
+  CTX.fillText('ACCURACY  /  SAFEGUARDS', x+10, y+16);
+  CTX.fillStyle=C.ink; CTX.font='9.5px JetBrains Mono,monospace';
+  const lines=[
+    'Conceptual schematic — not a certified design.',
+    'No exact dims, settings, efficiencies, or purity',
+    'guarantees implied. Crossover is non-zero in real',
+    'stacks. Electrolysis CONSUMES energy (ΔG>0).',
+    'Electrons do not cross an ideal PEM membrane.',
+    'No renewable-source assumption made.',
+  ];
+  lines.forEach((l,i)=>CTX.fillText(l, x+10, y+34+i*11));
+  CTX.restore();
+}
+
+function drawSegBanner(f){
+  let seg=1;
+  for(const s of [1,2,3,4,5]) if(f>=SEG_RANGES[s][0]) seg=s;
+  const name=SEG_NAMES[seg];
+  CTX.save();
+  CTX.fillStyle='rgba(10,16,25,0.6)';
+  CTX.fillRect(0,34, W, 22);
+  CTX.fillStyle=C.gold; CTX.font='600 11px JetBrains Mono,monospace';
+  CTX.textAlign='left'; CTX.textBaseline='middle';
+  CTX.fillText(name, 14, 45);
+  CTX.restore();
+}
+
+function drawAccuracyTags(f){
+  // time compression + scale tags during molecular segments (S2,S3,S4)
+  const a = clamp(fade(f,150,749),0,1);
+  if(a>0.01){
+    CTX.save(); CTX.globalAlpha=a;
+    CTX.fillStyle='rgba(255,209,102,0.14)';
+    rrect(W-250, 64, 236, 40, 6, 'rgba(255,209,102,0.10)', C.gold);
+    CTX.fillStyle=C.gold; CTX.font='600 9.5px JetBrains Mono,monospace'; CTX.textAlign='left';
+    CTX.fillText('TIME COMPRESSION ~10^6x', W-242, 78);
+    CTX.fillStyle=C.ink;
+    CTX.fillText('molecular events shown in slow motion', W-242, 92);
+    CTX.restore();
+  }
+  // conceptual schematic note (always, faint, bottom center)
+  CTX.save();
+  CTX.fillStyle=C.dim; CTX.font='9px JetBrains Mono,monospace'; CTX.textAlign='center';
+  CTX.fillText('CUTAWAY / CONCEPTUAL SCHEMATIC — INTERNAL VIEWS ARE NOT A SERVICEABLE ASSEMBLY',
+    W/2, H-8);
+  CTX.restore();
+}
+
+/* ---------- main render ---------- */
+function render(f){
+  drawGrid();
+  const cam = cameraAt(f);
+  CTX.save();
+  // camera transform: translate to center, scale, translate by -cam
+  CTX.translate(W/2, H/2);
+  CTX.scale(cam.z, cam.z);
+  CTX.translate(-cam.x, -cam.y);
+
+  // stack reveal: full by frame ~120 of S1
+  const reveal = clamp(segT(f, 0, 120),0,1);
+  drawStack(reveal);
+  // circuit visible from S1 onward (fades in)
+  const cA = clamp(segT(f, 20, 90),0,1);
+  CTX.globalAlpha = cA;
+  drawCircuit(f);
+  CTX.globalAlpha = 1;
+  // particles: water from S1, protons+gas from S2 onward
+  const pA = clamp(segT(f, 60, 160),0,1);
+  CTX.globalAlpha = pA;
+  drawWaterFlow(f);
+  CTX.globalAlpha = clamp(segT(f,150,260),0,1);
+  drawProtons(f);
+  drawGasBubbles(f);
+  CTX.globalAlpha = 1;
+  // control overlays + math insets + labels (world space)
+  drawControlOverlays(f);
+  drawMathInsets(f);
+  drawLabels(f);
+
+  CTX.restore();
+
+  // HUD in screen space
+  drawHUD(f);
+}
+
+/* ---------- playback loop ---------- */
+let frame = 0, playing = false, speed = 1, lastT = 0, acc = 0;
+const playBtn = document.getElementById('play');
+const restartBtn = document.getElementById('restart');
+const scrub = document.getElementById('scrub');
+const frameInfo = document.getElementById('frameinfo');
+const segNameEl = document.getElementById('segname');
+const speedSel = document.getElementById('speed');
+
+function setFrame(f){
+  frame = clamp(Math.round(f),0,TOTAL-1);
+  window.__lastFrame = frame;
+  render(frame);
+  scrub.value = frame;
+  frameInfo.textContent = `f ${String(frame).padStart(4,'0')} / 1019 | t ${(frame/FPS).toFixed(2)}s`;
+  let seg=1; for(const s of [1,2,3,4,5]) if(frame>=SEG_RANGES[s][0]) seg=s;
+  segNameEl.textContent = SEG_NAMES[seg];
+}
+function loop(ts){
+  if(!playing){ return; }
+  if(!lastT) lastT = ts;
+  const dt = (ts - lastT)/1000; lastT = ts;
+  acc += dt * speed * FPS;
+  while(acc >= 1){ frame++; acc -= 1; if(frame >= TOTAL){ frame = 0; } }
+  setFrame(frame);
+  requestAnimationFrame(loop);
+}
+playBtn.addEventListener('click', ()=>{
+  playing = !playing;
+  playBtn.textContent = playing ? 'Pause' : 'Play';
+  lastT = 0;
+  if(playing) requestAnimationFrame(loop);
+});
+restartBtn.addEventListener('click', ()=>{ setFrame(0); acc=0; });
+scrub.addEventListener('input', ()=>{ setFrame(parseInt(scrub.value)); acc=0; });
+speedSel.addEventListener('change', ()=>{ speed = parseFloat(speedSel.value); });
+
+// first paint
+setFrame(0);
+// respond to URL hash changes (#f=NNN pauses at that frame)
+function applyHash(){
+  const hm = (location.hash||'').match(/f=(\d+)/);
+  if(hm){ setFrame(parseInt(hm[1])); playing=false; playBtn.textContent='Play'; }
+  else if(!playing){ playing=true; playBtn.textContent='Pause'; lastT=0; requestAnimationFrame(loop); }
+}
+window.addEventListener('hashchange', applyHash);
+applyHash();
+</script>
+</body>
+</html>
